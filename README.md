@@ -65,6 +65,82 @@ DQN Yanick
 uv run python dqn_example.py
 ```
 
+### Parameters:
+
+#### DQN Clean RL Parameters:
+- `--exp_name`: Experiment name (default: 'dqn_clean_rl')
+- `--seed`: Random seed (default: 1)
+- `--cuda`: Enable CUDA (default: True)
+- `--total_timesteps`: Total timesteps for training (default: 10000000)
+- `--learning_rate`: Learning rate (default: 1e-4)
+- `--buffer_size`: Replay buffer size (default: 1000000)
+- `--gamma`: Discount factor (default: 0.99)
+- `--batch_size`: Batch size (default: 32)
+- `--start_e`: Initial exploration epsilon (default: 1)
+- `--end_e`: Final exploration epsilon (default: 0.01)
+- `--exploration_fraction`: Fraction of timesteps for epsilon decay (default: 0.10)
+- `--learning_starts`: Timesteps before learning starts (default: 80000)
+- `--train_frequency`: Training frequency (default: 4)
+- `--eval_checkpoint`: Path to checkpoint for evaluation only
+
+#### PPO Clean RL Parameters:
+- `--exp_name`: Experiment name (default: 'ppo_clean_rl')
+- `--seed`: Random seed (default: 1)
+- `--cuda`: Enable CUDA (default: True)
+- `--total_timesteps`: Total timesteps for training (default: 10000000)
+- `--learning_rate`: Learning rate (default: 2.5e-4)
+- `--num_envs`: Number of parallel environments (default: 16)
+- `--num_steps`: Steps per environment per rollout (default: 128)
+- `--anneal_lr`: Enable learning rate annealing (default: True)
+- `--gamma`: Discount factor (default: 0.99)
+- `--gae_lambda`: GAE lambda parameter (default: 0.95)
+- `--num_minibatches`: Number of minibatches (default: 4)
+- `--update_epochs`: Number of update epochs (default: 4)
+- `--clip_coef`: PPO clip coefficient (default: 0.1)
+- `--ent_coef`: Entropy coefficient (default: 0.01)
+- `--vf_coef`: Value function coefficient (default: 0.5)
+- `--eval_checkpoint`: Path to checkpoint for evaluation only
+
+#### DQN Yanick Parameters:
+- `--mode`: 'train' or 'eval' mode (default: 'train')
+- `--logdir`: Directory for logs (default: './runs')
+- `--run_name`: Run name (default: current datetime)
+- `--cuda`: Enable CUDA (default: True)
+- `--seed`: Random seed (default: 42)
+- `--gamma`: Discount factor (default: 0.99)
+- `--batch_size`: Batch size (default: 32)
+- `--learning_rate`: Learning rate (default: 2.5e-4)
+- `--num_envs`: Number of parallel environments (default: 16)
+- `--total_steps`: Total training steps (default: 10000000)
+- `--warmup_steps`: Steps to fill replay buffer before training (default: 80000)
+- `--buffer_size`: Replay buffer size (default: 100000)
+- `--exploration_epsilon_initial`: Initial exploration epsilon (default: 1.0)
+- `--exploration_epsilon_final`: Final exploration epsilon (default: 0.1)
+- `--exploration_fraction`: Fraction of training for epsilon decay (default: 0.1)
+- `--train_freq`: Training frequency (default: 4)
+- `--eval_checkpoint`: Path to checkpoint for evaluation mode
+
+### Beispiel: Parameter setzen
+
+Um Parameter beim Ausführen von Skripten mit `uv` zu ändern, fügen Sie sie einfach nach dem Skriptnamen an. Zum Beispiel, um weniger Zeitschritte zu trainieren:
+
+```
+# DQN Clean RL mit 1 Millionen Zeitschritte statt 10 Millionen
+uv run python dqn_clean_rl.py --total_timesteps 1000000
+
+# PPO Clean RL mit 2 Millionen Zeitschritte
+uv run python ppo_clean_rl.py --total_timesteps 2000000 
+
+# DQN Yanick mit 500,000 Zeitschritte (uses --total_steps instead of --total_timesteps)
+uv run python dqn_example.py --total_steps 500000
+```
+
+Sie können mehrere Parameter in derselben Befehlszeile kombinieren:
+
+```
+uv run python dqn_clean_rl.py --total_timesteps 1000000 --learning_rate 5e-4 --seed 42
+```
+
 ## Evaluation
 
 PPO Clean RL:
@@ -93,10 +169,6 @@ Diese Datei definiert alle Projektabhängigkeiten und die Python-Version (3.10).
 Template für das Implementieren der Lösung.
 
 Es steht euch jedoch offen, ob ihr dieses Template verwendet oder einen eigenen Ansatz verfolgt.
-
-### run.sh
-
-Script um `run.py` auf dem SLURM cluster auszuführen.
 
 ### dqn_example.py
 
