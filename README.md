@@ -141,6 +141,48 @@ Sie können mehrere Parameter in derselben Befehlszeile kombinieren:
 uv run python dqn_clean_rl.py --total_timesteps 1000000 --learning_rate 5e-4 --seed 42
 ```
 
+### Weights & Biases (wandb) Tracking
+
+Die CleanRL-Implementierungen (`ppo_clean_rl.py` und `dqn_clean_rl.py`) unterstützen das Tracking mit Weights & Biases (wandb), einem Tool für ML Experiment Tracking.
+
+#### Einrichtung von wandb
+
+1. **Konto erstellen**: Besuchen Sie [wandb.ai](https://wandb.ai) und erstellen Sie ein kostenloses Konto.
+
+2. **API-Schlüssel kopieren**: Nach der Anmeldung können Sie Ihren API-Schlüssel unter [wandb.ai/authorize](https://wandb.ai/authorize) finden.
+
+3. **wandb installieren und anmelden**:
+```
+uv run wandb login
+```
+Bei der Anmeldung werden Sie aufgefordert, Ihren API-Schlüssel einzugeben.
+
+#### Aktivieren des wandb-Trackings
+
+Um wandb-Tracking mit den CleanRL-Implementierungen zu aktivieren:
+
+```
+# DQN mit wandb-Tracking
+uv run python dqn_clean_rl.py --track --wandb_project_name "space-invaders-dqn"
+
+# PPO mit wandb-Tracking und eigenem Team/Entity
+uv run python ppo_clean_rl.py --track --wandb_project_name "space-invaders-ppo" --wandb_entity "mein-team"
+```
+
+#### Verfügbare wandb-Parameter:
+
+- `--track`: Aktiviert das wandb-Tracking (default: False)
+- `--wandb_project_name`: Name des wandb-Projekts (default: "cleanRL")
+- `--wandb_entity`: Entity/Team für das wandb-Projekt (optional)
+
+Mit wandb können Sie:
+- Trainingsmetriken in Echtzeit verfolgen
+- Hyperparameter und deren Auswirkungen visualisieren
+- Experimente vergleichen und teilen
+- Modellleistung über Zeit analysieren
+
+Nach dem Training können Sie Ihre Ergebnisse unter [wandb.ai/home](https://wandb.ai/home) einsehen.
+
 ## Evaluation
 
 PPO Clean RL:
