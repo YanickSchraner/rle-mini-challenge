@@ -12,8 +12,7 @@ def make_env(render_mode: Literal['human', 'rgb_array', None] = 'human', video_f
     #                obs_type='grayscale',
     #                frameskip=3,
     #                repeat_action_probability=0.,
-    #                render_mode='human' if render_human else None)
-    #env = gym.wrappers.RecordEpisodeStatistics(env)
+    env = gym.wrappers.RecordEpisodeStatistics(env)
     if video_folder is not None:
         env = gym.wrappers.RecordVideo(
             env,
@@ -21,5 +20,4 @@ def make_env(render_mode: Literal['human', 'rgb_array', None] = 'human', video_f
             video_folder="saved-video-folder",
             name_prefix="video-",
         )
-        #env = gym.wrappers.RecordVideo(env, video_folder, video_episode_trigger)
     return env
