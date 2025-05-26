@@ -17,7 +17,7 @@ def make_env(render_mode: Literal['human', 'rgb_array', None] = 'human', video_f
         env = gym.wrappers.RecordVideo(
             env,
             episode_trigger=lambda num: num % 2 == 0,
-            video_folder="saved-video-folder",
+            video_folder=video_folder,
             name_prefix="video-",
         )
     return env
