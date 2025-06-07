@@ -7,9 +7,7 @@ gym.register_envs(ale_py)
 
 
 def make_env(render_mode: Literal['human', 'rgb_array', None] = 'human', video_folder: str = None, video_episode_trigger: Callable[[int], bool] = None):
-    env = gym.make("ALE/SpaceInvaders-v5", render_mode=render_mode)
-    # env = gym.make("ALE/SpaceInvaders-v5",
-    #                obs_type='grayscale',
+    env = gym.make("ALE/SpaceInvaders-v5", render_mode=render_mode, obs_type='grayscale')
     #                frameskip=3,
     #                repeat_action_probability=0.,
     env = gym.wrappers.RecordEpisodeStatistics(env)
