@@ -1,54 +1,56 @@
 # RLE Mini-Challenge
 
-Ziel dieser Mini-Challenge ist es einen Deep Reinforcemen Learning Agenten zu trainieren, der einen möglichst hohen Score im Atari Spiel "Space Invaders" erreicht.
+**English** | [Deutsch](README.de.md)
 
-In diesem Repository findet ihr ein Template, auf dem ihr eure Lösung implementieren könnt, sowie eine Beispiel-Implementation eines einfachen DQN Agenten.
+The goal of this mini-challenge is to train a deep reinforcement learning agent that achieves the highest possible score in the Atari game "Space Invaders".
+
+This repository contains a template on which you can implement your solution, as well as an example implementation of a simple DQN agent.
 
 ## Atari Space Invaders Environment
 
 ![](https://ale.farama.org/_images/space_invaders.gif)
 
 
-Gym Dokumentation: [https://gymnasium.farama.org/](https://gymnasium.farama.org/)
+Gym documentation: [https://gymnasium.farama.org/](https://gymnasium.farama.org/)
 
-Gym Space Invaders Dokumentation: [https://ale.farama.org/environments/space_invaders/](https://ale.farama.org/environments/space_invaders/)
+Gym Space Invaders documentation: [https://ale.farama.org/environments/space_invaders/](https://ale.farama.org/environments/space_invaders/)
 
 
 ## Installation
 
-Dieses Projekt verwendet [Astral UV](https://docs.astral.sh/uv/) als Paket- und Umgebungsmanager, der wesentlich schneller als pip und andere Tools ist.
+This project uses [Astral UV](https://docs.astral.sh/uv/) as its package and environment manager, which is considerably faster than pip and other tools.
 
-### 1. Astral UV installieren
+### 1. Install Astral UV
 
-UV ist ein moderner Python-Paketmanager, der pip, venv, poetry und andere Tools ersetzt. Er ist 10-100x schneller als traditionelle Lösungen.
+UV is a modern Python package manager that replaces pip, venv, poetry and other tools. It is 10-100x faster than traditional solutions.
 
-Für Windows:
+For Windows:
 ```
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-Für macOS und Linux:
+For macOS and Linux:
 ```
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### 2. Projekt-Repository klonen
+### 2. Clone the project repository
 
 ```
 git clone https://github.com/YanickSchraner/rle-mini-challenge.git
 cd rle-mini-challenge
 ```
 
-Ein passendes virtual environment wird automatisch erstellt und aktiviert sobald Sie `uv run python <script>.py` ausführen
+A matching virtual environment is created and activated automatically as soon as you run `uv run python <script>.py`.
 
 ## Tensorboard
-Einzelne Experimente können in Tensorboard gelogged werden.
-So können diese visualisiert werden:
+Individual experiments can be logged to Tensorboard.
+To visualize them:
 ```
 uv run tensorboard --logdir runs
 ```
 
-## Training starten:
+## Start training:
 
 PPO Clean RL
 ```
@@ -120,22 +122,22 @@ uv run python dqn_example.py
 - `--train_freq`: Training frequency (default: 4)
 - `--eval_checkpoint`: Path to checkpoint for evaluation mode
 
-### Beispiel: Parameter setzen
+### Example: setting parameters
 
-Um Parameter beim Ausführen von Skripten mit `uv` zu ändern, fügen Sie sie einfach nach dem Skriptnamen an. Zum Beispiel, um weniger Zeitschritte zu trainieren:
+To change parameters when running scripts with `uv`, simply append them after the script name. For example, to train for fewer timesteps:
 
 ```
-# DQN Clean RL mit 1 Millionen Zeitschritte statt 10 Millionen
+# DQN Clean RL with 1 million timesteps instead of 10 million
 uv run python dqn_clean_rl.py --total_timesteps 1000000
 
-# PPO Clean RL mit 2 Millionen Zeitschritte
-uv run python ppo_clean_rl.py --total_timesteps 2000000 
+# PPO Clean RL with 2 million timesteps
+uv run python ppo_clean_rl.py --total_timesteps 2000000
 
-# DQN Yanick mit 500,000 Zeitschritte (uses --total_steps instead of --total_timesteps)
+# DQN Yanick with 500,000 timesteps (uses --total_steps instead of --total_timesteps)
 uv run python dqn_example.py --total_steps 500000
 ```
 
-Sie können mehrere Parameter in derselben Befehlszeile kombinieren:
+You can combine multiple parameters in the same command:
 
 ```
 uv run python dqn_clean_rl.py --total_timesteps 1000000 --learning_rate 5e-4 --seed 42
@@ -143,112 +145,113 @@ uv run python dqn_clean_rl.py --total_timesteps 1000000 --learning_rate 5e-4 --s
 
 ### Weights & Biases (wandb) Tracking
 
-Die CleanRL-Implementierungen (`ppo_clean_rl.py` und `dqn_clean_rl.py`) unterstützen das Tracking mit Weights & Biases (wandb), einem Tool für ML Experiment Tracking.
+The CleanRL implementations (`ppo_clean_rl.py` and `dqn_clean_rl.py`) support tracking with Weights & Biases (wandb), a tool for ML experiment tracking.
 
-#### Einrichtung von wandb
+#### Setting up wandb
 
-1. **Konto erstellen**: Besuchen Sie [wandb.ai](https://wandb.ai) und erstellen Sie ein kostenloses Konto.
+1. **Create an account**: Visit [wandb.ai](https://wandb.ai) and create a free account.
 
-2. **API-Schlüssel kopieren**: Nach der Anmeldung können Sie Ihren API-Schlüssel unter [wandb.ai/authorize](https://wandb.ai/authorize) finden.
+2. **Copy your API key**: After signing in, you can find your API key at [wandb.ai/authorize](https://wandb.ai/authorize).
 
-3. **wandb installieren und anmelden**:
+3. **Install wandb and log in**:
 ```
 uv run wandb login
 ```
-Bei der Anmeldung werden Sie aufgefordert, Ihren API-Schlüssel einzugeben.
+During login you will be prompted to enter your API key.
 
-#### Aktivieren des wandb-Trackings
+#### Enabling wandb tracking
 
-Um wandb-Tracking mit den CleanRL-Implementierungen zu aktivieren:
+To enable wandb tracking with the CleanRL implementations:
 
 ```
-# DQN mit wandb-Tracking
+# DQN with wandb tracking
 uv run python dqn_clean_rl.py --track --wandb_project_name "space-invaders-dqn"
 
-# PPO mit wandb-Tracking und eigenem Team/Entity
-uv run python ppo_clean_rl.py --track --wandb_project_name "space-invaders-ppo" --wandb_entity "mein-team"
+# PPO with wandb tracking and your own team/entity
+uv run python ppo_clean_rl.py --track --wandb_project_name "space-invaders-ppo" --wandb_entity "my-team"
 ```
 
-#### Verfügbare wandb-Parameter:
+#### Available wandb parameters:
 
-- `--track`: Aktiviert das wandb-Tracking (default: False)
-- `--wandb_project_name`: Name des wandb-Projekts (default: "cleanRL")
-- `--wandb_entity`: Entity/Team für das wandb-Projekt (optional)
+- `--track`: Enables wandb tracking (default: False)
+- `--wandb_project_name`: Name of the wandb project (default: "cleanRL")
+- `--wandb_entity`: Entity/team for the wandb project (optional)
 
-Mit wandb können Sie:
-- Trainingsmetriken in Echtzeit verfolgen
-- Hyperparameter und deren Auswirkungen visualisieren
-- Experimente vergleichen und teilen
-- Modellleistung über Zeit analysieren
+With wandb you can:
+- Track training metrics in real time
+- Visualize hyperparameters and their effects
+- Compare and share experiments
+- Analyze model performance over time
 
-Nach dem Training können Sie Ihre Ergebnisse unter [wandb.ai/home](https://wandb.ai/home) einsehen.
+After training, you can view your results at [wandb.ai/home](https://wandb.ai/home).
 
 ## Evaluation
 
 PPO Clean RL:
 ```
-uv run python ppo_clean_rl.py --eval-checkpoint "runs/{run_name}/{args.exp_name}.cleanrl_model"
+uv run python ppo_clean_rl.py --eval_checkpoint "runs/{run_name}/{exp_name}.cleanrl_model"
 ```
 
 DQN Clean RL:
 ```
-uv run python dqn_clean_rl.py --eval-checkpoint "runs/{run_name}/{args.exp_name}.cleanrl_model"
+uv run python dqn_clean_rl.py --eval_checkpoint "runs/{run_name}/{exp_name}.cleanrl_model"
 ```
 
 DQN Yanick
 ```
-uv run python dqn_example.py --eval_checkpoint PATH_TO_CHECKPOINT
+uv run python dqn_example.py --mode eval --run_name {run_name} --eval_checkpoint checkpoint-last.pt
 ```
+`--eval_checkpoint` is a file name inside `runs/{run_name}/` (e.g. `checkpoint-last.pt` or `checkpoint-<step>.pt`).
 
-## Projektstruktur
+## Project structure
 
 ### pyproject.toml
 
-Diese Datei definiert alle Projektabhängigkeiten und die Python-Version (3.10). Sie enthält auch spezielle Konfigurationen für PyTorch mit CUDA-Unterstützung auf Windows.
+This file defines all project dependencies and the Python version (3.10). It also contains special configuration for PyTorch with CUDA support on Windows.
 
 ### run.py
 
-Template für das Implementieren der Lösung.
+Template for implementing your solution.
 
-Es steht euch jedoch offen, ob ihr dieses Template verwendet oder einen eigenen Ansatz verfolgt.
+However, you are free to use this template or follow your own approach.
 
 ### dqn_example.py
 
-Beispiel-Implementation eines einfachen DQN agent. Kann für die mini-challenge verwendet und erweitert werden.
+Example implementation of a simple DQN agent. Can be used and extended for the mini-challenge.
 
-### dqn_clen_rl.py
+### dqn_clean_rl.py
 
-Beispiel-Implementation DQN von [CleanRL](https://docs.cleanrl.dev/). Kann für die mini-challenge verwendet und erweitert werden.
+Example DQN implementation from [CleanRL](https://docs.cleanrl.dev/). Can be used and extended for the mini-challenge.
 
-### ppo_clen_rl.py
+### ppo_clean_rl.py
 
-Beispiel-Implementation PPO von [CleanRL](https://docs.cleanrl.dev/). Kann für die mini-challenge verwendet und erweitert werden.
+Example PPO implementation from [CleanRL](https://docs.cleanrl.dev/). Can be used and extended for the mini-challenge.
 
 
 ### utils/env.py
 
-Beinhaltet die `make_env` Funktion, zum erstellen einer Environment-Instanz.
+Contains the `make_env` function for creating an environment instance.
 
 ### utils/utils.py
 
-Beinhaltet nützliche Funktionen und Klassen.
+Contains useful functions and classes.
 
-## Fehlerbehebung
+## Troubleshooting
 
-### PyTorch CUDA-Probleme
+### PyTorch CUDA issues
 
-Falls Probleme mit der CUDA-Unterstützung auftreten, überprüfen Sie:
+If you run into problems with CUDA support, check:
 
-1. Ob eine kompatible NVIDIA-Grafikkarte installiert ist
-2. Ob die neuesten NVIDIA-Treiber installiert sind
-3. Ob CUDA Toolkit installiert ist
+1. Whether a compatible NVIDIA graphics card is installed
+2. Whether the latest NVIDIA drivers are installed
+3. Whether the CUDA Toolkit is installed
 
-Mit dem folgenden Befehl können Sie testen, ob PyTorch CUDA erkennt:
+You can use the following command to test whether PyTorch detects CUDA:
 
 ```
 uv run python -c "import torch; print(torch.cuda.is_available())"
 ```
 
-### Atari ROM-Probleme
+### Atari ROM issues
 
-Wenn Fehler bezüglich Atari ROMs auftreten, stellen Sie sicher, dass Sie beim ersten Ausführen die Lizenzvereinbarung akzeptiert haben.
+If you get errors related to Atari ROMs, make sure you accepted the license agreement the first time you ran the project.
