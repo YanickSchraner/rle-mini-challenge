@@ -3,6 +3,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
@@ -20,9 +21,8 @@ from stable_baselines3.common.atari_wrappers import (
 )
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
-from utils.dqn_eval import evaluate
 
-
+import utils.env
 
 @dataclass
 class Args:
@@ -38,7 +38,7 @@ class Args:
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "cleanRL"
     """the wandb's project name"""
-    wandb_entity: str = None
+    wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
     capture_video: bool = True
     """whether to capture videos of the agent performances (check out `videos` folder)"""
@@ -46,20 +46,22 @@ class Args:
     """whether to save model into the `runs/{run_name}` folder"""
     hf_entity: str = ""
     """the user or org name of the model repository from the Hugging Face Hub"""
-    eval_checkpoint: str = None
-    """"if set, no training, only evaluation of the checkpoint is done"""
+    eval_checkpoint: Optional[str] = None
+    """if set, no training, only evaluation of the checkpoint is done"""
+    eval_episodes: int = utils.env.EVAL_EPISODES
+    """the number of evaluation episodes"""
+    eval_epsilon: float = 0.05
+    """epsilon-greedy during evaluation"""
 
     # Algorithm specific arguments
-    env_id: str = "ALE/SpaceInvaders-v5"
-    """the id of the environment"""
     total_timesteps: int = 10000000
     """total timesteps of the experiments"""
     learning_rate: float = 1e-4
     """the learning rate of the optimizer"""
     num_envs: int = 1
     """the number of parallel game environments"""
-    buffer_size: int = 1000000
-    """the replay memory buffer size"""
+    buffer_size: int = 100000
+    """the replay memory buffer size (100k transitions need ~2.8 GB of RAM)"""
     gamma: float = 0.99
     """the discount factor gamma"""
     tau: float = 1.0
@@ -80,25 +82,25 @@ class Args:
     """the frequency of training"""
 
 
-def make_env(env_id, seed, idx, capture_video, run_name):
-    def thunk():
-        if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        else:
-            env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-
-        env = NoopResetEnv(env, noop_max=30)
-        env = MaxAndSkipEnv(env, skip=4)
+def preprocess(env, training=True):
+    env = NoopResetEnv(env, noop_max=30)
+    env = MaxAndSkipEnv(env, skip=4)
+    if training:
+        # ending episodes on life loss helps training, but evaluation always plays full games
         env = EpisodicLifeEnv(env)
-        if "FIRE" in env.unwrapped.get_action_meanings():
-            env = FireResetEnv(env)
-        env = ClipRewardEnv(env)
-        env = gym.wrappers.ResizeObservation(env, (84, 84))
-        env = gym.wrappers.GrayScaleObservation(env)
-        env = gym.wrappers.FrameStack(env, 4)
+    if "FIRE" in env.unwrapped.get_action_meanings():
+        env = FireResetEnv(env)
+    env = ClipRewardEnv(env)
+    env = gym.wrappers.ResizeObservation(env, (84, 84))
+    env = gym.wrappers.GrayscaleObservation(env)
+    env = gym.wrappers.FrameStackObservation(env, 4)
+    return env
 
+
+def make_env(seed, idx, capture_video, run_name):
+    def thunk():
+        video_folder = f"videos/{run_name}" if capture_video and idx == 0 else None
+        env = preprocess(utils.env.make_env(video_folder=video_folder))
         env.action_space.seed(seed)
         return env
 
@@ -132,18 +134,9 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
 
 
 if __name__ == "__main__":
-    import stable_baselines3 as sb3
-
-    if sb3.__version__ < "2.0":
-        raise ValueError(
-            """Ongoing migration: run the following command to install the new dependencies:
-
-poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-license]==0.28.1"  "ale-py==0.8.1" 
-"""
-        )
     args = tyro.cli(Args)
     assert args.num_envs == 1, "vectorized envs are not supported at the moment"
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{time.strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"SpaceInvaders__{args.exp_name}__{args.seed}__{time.strftime('%Y%m%d_%H%M%S')}"
     if args.track:
         import wandb
 
@@ -162,23 +155,26 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    if args.eval_checkpoint == None:
+    # TRY NOT TO MODIFY: seeding
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.backends.cudnn.deterministic = args.torch_deterministic
 
-        # TRY NOT TO MODIFY: seeding
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.backends.cudnn.deterministic = args.torch_deterministic
+    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-        device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    # env setup
+    # SAME_STEP: when an episode ends, the env is reset within the same step and the
+    # terminal observation is returned in infos["final_obs"]
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(args.seed + i, i, args.capture_video and not args.eval_checkpoint, run_name) for i in range(args.num_envs)],
+        autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
+    )
+    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-        # env setup
-        envs = gym.vector.SyncVectorEnv(
-            [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
-        )
-        assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    q_network = QNetwork(envs).to(device)
 
-        q_network = QNetwork(envs).to(device)
+    if not args.eval_checkpoint:
         optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
         target_network = QNetwork(envs).to(device)
         target_network.load_state_dict(q_network.state_dict())
@@ -208,18 +204,18 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
             # TRY NOT TO MODIFY: record rewards for plotting purposes
-            if "final_info" in infos:
-                for info in infos["final_info"]:
-                    if info and "episode" in info:
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+            if "final_info" in infos and "_episode" in infos["final_info"]:
+                episode = infos["final_info"]["episode"]
+                for i in np.flatnonzero(infos["final_info"]["_episode"]):
+                    print(f"global_step={global_step}, episodic_return={episode['r'][i]}")
+                    writer.add_scalar("charts/episodic_return", episode["r"][i], global_step)
+                    writer.add_scalar("charts/episodic_length", episode["l"][i], global_step)
 
             # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
             real_next_obs = next_obs.copy()
             for idx, trunc in enumerate(truncations):
                 if trunc:
-                    real_next_obs[idx] = infos["final_observation"][idx]
+                    real_next_obs[idx] = infos["final_obs"][idx]
             rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
             # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
@@ -257,16 +253,25 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
             torch.save(q_network.state_dict(), model_path)
             print(f"model saved to {model_path}")
-            
-    episodic_returns = evaluate(
-        model_path,
-        make_env,
-        args.env_id,
-        eval_episodes=100,
-        run_name=f"{run_name}-eval",
-        Model=QNetwork,
-        device=device,
-        epsilon=0.05,
+    else:
+        q_network.load_state_dict(torch.load(args.eval_checkpoint, map_location=device))
+    envs.close()
+
+    # evaluation with the official protocol
+    q_network.eval()
+
+    def policy(obs):
+        if random.random() < args.eval_epsilon:
+            return random.randrange(envs.single_action_space.n)
+        with torch.no_grad():
+            q_values = q_network(torch.Tensor(obs).unsqueeze(0).to(device))
+        return int(torch.argmax(q_values, dim=1).item())
+
+    episodic_returns = utils.env.evaluate(
+        policy,
+        lambda env: preprocess(env, training=False),
+        num_episodes=args.eval_episodes,
+        video_folder=f"videos/{run_name}-eval" if args.capture_video else None,
     )
     writer.add_scalar("eval/episodic_return_mean", np.average(episodic_returns),0)
     writer.add_scalar("eval/episodic_return_min", np.min(episodic_returns),0)
@@ -275,5 +280,4 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     for idx, episodic_return in enumerate(episodic_returns):
         writer.add_scalar("eval/episodic_return", episodic_return, idx)
 
-    envs.close()
     writer.close()

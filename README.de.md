@@ -2,18 +2,34 @@
 
 [English](README.md) | **Deutsch**
 
-Ziel dieser Mini-Challenge ist es einen Deep Reinforcement Learning Agenten zu trainieren, der einen möglichst hohen Score im Atari Spiel "Space Invaders" erreicht.
+Ziel dieser Mini-Challenge ist es, einen Deep Reinforcement Learning Agenten zu trainieren, der einen möglichst hohen Score im Atari Spiel "Space Invaders" erreicht.
 
-In diesem Repository findet ihr ein Template, auf dem ihr eure Lösung implementieren könnt, sowie eine Beispiel-Implementation eines einfachen DQN Agenten.
+In diesem Repository findet ihr ein Template, auf dem ihr eure Lösung implementieren könnt, sowie Beispiel-Implementationen von DQN und PPO Agenten.
 
 ## Atari Space Invaders Environment
 
 ![](https://ale.farama.org/_images/space_invaders.gif)
 
 
-Gym Dokumentation: [https://gymnasium.farama.org/](https://gymnasium.farama.org/)
+Gymnasium Dokumentation: [https://gymnasium.farama.org/](https://gymnasium.farama.org/)
 
-Gym Space Invaders Dokumentation: [https://ale.farama.org/environments/space_invaders/](https://ale.farama.org/environments/space_invaders/)
+Space Invaders Dokumentation: [https://ale.farama.org/environments/space_invaders/](https://ale.farama.org/environments/space_invaders/)
+
+### Offizielles Environment und Evaluation
+
+Alle Agenten werden auf demselben Environment trainiert und evaluiert, definiert in `utils/env.py` (`make_env`). Diese Datei darf nicht verändert werden.
+
+- `ALE/SpaceInvaders-v5` mit `frameskip=1`: jeder Schritt bewegt das Spiel um genau einen Frame weiter. Frame Skipping ist Teil der Vorverarbeitung eures Agenten (z.B. `gymnasium.wrappers.AtariPreprocessing(env, frame_skip=4)`).
+- Sticky Actions (`repeat_action_probability=0.25`): mit einer Wahrscheinlichkeit von 25% wird die vorherige Aktion anstelle der gewählten wiederholt.
+- Eine Episode ist ein ganzes Spiel (alle Leben) und dauert höchstens 108'000 Frames (30 Minuten Spielzeit).
+
+Eure Abgabe wird mit `utils.env.evaluate` bewertet: der mittlere Score (ungeclippte Spielpunkte) über 100 Episoden mit Seed 1234. Ihr übergebt eine Policy (Observation → Aktion) und die Wrapper zur Vorverarbeitung, mit denen euer Agent trainiert wurde. Wrapper, die eine Episode frühzeitig beenden (z.B. bei Verlust eines Lebens), sind bei der Evaluation nicht erlaubt. Alle Beispiel-Skripte verwenden diese Funktion für ihre Evaluation.
+
+```python
+import utils.env
+
+scores = utils.env.evaluate(policy, wrap_env=preprocess)
+```
 
 
 ## Installation
@@ -41,7 +57,7 @@ git clone https://github.com/YanickSchraner/rle-mini-challenge.git
 cd rle-mini-challenge
 ```
 
-Ein passendes virtual environment wird automatisch erstellt und aktiviert sobald Sie `uv run python <script>.py` ausführen
+Ein passendes virtual environment wird automatisch erstellt und aktiviert, sobald Sie `uv run python <script>.py` ausführen. Das Projekt unterstützt Python 3.11 bis 3.14 und verwendet standardmässig Python 3.13 (siehe `.python-version`). UV lädt es bei Bedarf automatisch herunter.
 
 ## Tensorboard
 Einzelne Experimente können in Tensorboard gelogged werden.
@@ -67,15 +83,18 @@ DQN Yanick
 uv run python dqn_example.py
 ```
 
+Nach dem Training evaluiert jedes Skript den Agenten mit der offiziellen Evaluation (siehe oben).
+
 ### Parameters:
 
 #### DQN Clean RL Parameters:
 - `--exp_name`: Experiment name (default: 'dqn_clean_rl')
 - `--seed`: Random seed (default: 1)
 - `--cuda`: Enable CUDA (default: True)
+- `--capture_video`: Record videos to the `videos` folder (default: True)
 - `--total_timesteps`: Total timesteps for training (default: 10000000)
 - `--learning_rate`: Learning rate (default: 1e-4)
-- `--buffer_size`: Replay buffer size (default: 1000000)
+- `--buffer_size`: Replay buffer size (default: 100000, benötigt ~2.8 GB RAM)
 - `--gamma`: Discount factor (default: 0.99)
 - `--batch_size`: Batch size (default: 32)
 - `--start_e`: Initial exploration epsilon (default: 1)
@@ -84,11 +103,14 @@ uv run python dqn_example.py
 - `--learning_starts`: Timesteps before learning starts (default: 80000)
 - `--train_frequency`: Training frequency (default: 4)
 - `--eval_checkpoint`: Path to checkpoint for evaluation only
+- `--eval_episodes`: Number of evaluation episodes (default: 100)
+- `--eval_epsilon`: Exploration epsilon during evaluation (default: 0.05)
 
 #### PPO Clean RL Parameters:
 - `--exp_name`: Experiment name (default: 'ppo_clean_rl')
 - `--seed`: Random seed (default: 1)
 - `--cuda`: Enable CUDA (default: True)
+- `--capture_video`: Record videos to the `videos` folder (default: True)
 - `--total_timesteps`: Total timesteps for training (default: 10000000)
 - `--learning_rate`: Learning rate (default: 2.5e-4)
 - `--num_envs`: Number of parallel environments (default: 16)
@@ -102,25 +124,34 @@ uv run python dqn_example.py
 - `--ent_coef`: Entropy coefficient (default: 0.01)
 - `--vf_coef`: Value function coefficient (default: 0.5)
 - `--eval_checkpoint`: Path to checkpoint for evaluation only
+- `--eval_episodes`: Number of evaluation episodes (default: 100)
+
+Boolesche Parameter der CleanRL-Skripte werden mit dem Präfix `--no-` ausgeschaltet, z.B. `--no-cuda` oder `--no-capture-video`.
 
 #### DQN Yanick Parameters:
+Alle Schrittzahlen sind Environment-Schritte, summiert über alle parallelen Environments.
 - `--mode`: 'train' or 'eval' mode (default: 'train')
 - `--logdir`: Directory for logs (default: './runs')
 - `--run_name`: Run name (default: current datetime)
-- `--cuda`: Enable CUDA (default: True)
+- `--cuda`: Use CUDA if available (default: True, mit `--nocuda` ausschalten)
 - `--seed`: Random seed (default: 42)
 - `--gamma`: Discount factor (default: 0.99)
 - `--batch_size`: Batch size (default: 32)
 - `--learning_rate`: Learning rate (default: 2.5e-4)
 - `--num_envs`: Number of parallel environments (default: 16)
-- `--total_steps`: Total training steps (default: 10000000)
+- `--total_steps`: Total environment steps (default: 10000000)
 - `--warmup_steps`: Steps to fill replay buffer before training (default: 80000)
-- `--buffer_size`: Replay buffer size (default: 100000)
+- `--buffer_size`: Replay buffer size (default: 100000, benötigt ~1.4 GB RAM)
 - `--exploration_epsilon_initial`: Initial exploration epsilon (default: 1.0)
 - `--exploration_epsilon_final`: Final exploration epsilon (default: 0.1)
 - `--exploration_fraction`: Fraction of training for epsilon decay (default: 0.1)
-- `--train_freq`: Training frequency (default: 4)
+- `--train_freq`: One gradient step every `train_freq` environment steps (default: 4)
+- `--target_network_update_freq`: Target network update frequency (default: 1000)
+- `--checkpoint_freq`: Checkpoint frequency (default: 1000000)
 - `--eval_checkpoint`: Path to checkpoint for evaluation mode
+- `--eval_num_episodes`: Number of evaluation episodes (default: 100)
+- `--eval_epsilon`: Exploration epsilon during evaluation (default: 0.05)
+- `--eval_render`: Show the game in a window during evaluation (default: False)
 
 ### Beispiel: Parameter setzen
 
@@ -131,9 +162,9 @@ Um Parameter beim Ausführen von Skripten mit `uv` zu ändern, fügen Sie sie ei
 uv run python dqn_clean_rl.py --total_timesteps 1000000
 
 # PPO Clean RL mit 2 Millionen Zeitschritte
-uv run python ppo_clean_rl.py --total_timesteps 2000000 
+uv run python ppo_clean_rl.py --total_timesteps 2000000
 
-# DQN Yanick mit 500,000 Zeitschritte (uses --total_steps instead of --total_timesteps)
+# DQN Yanick mit 500,000 Zeitschritte (verwendet --total_steps statt --total_timesteps)
 uv run python dqn_example.py --total_steps 500000
 ```
 
@@ -187,50 +218,51 @@ Nach dem Training können Sie Ihre Ergebnisse unter [wandb.ai/home](https://wand
 
 ## Evaluation
 
+Einen gespeicherten Checkpoint ohne Training evaluieren:
+
 PPO Clean RL:
 ```
-uv run python ppo_clean_rl.py --eval_checkpoint "runs/{run_name}/{exp_name}.cleanrl_model"
+uv run python ppo_clean_rl.py --eval_checkpoint "runs/{run_name}/ppo_clean_rl.cleanrl_model"
 ```
 
 DQN Clean RL:
 ```
-uv run python dqn_clean_rl.py --eval_checkpoint "runs/{run_name}/{exp_name}.cleanrl_model"
+uv run python dqn_clean_rl.py --eval_checkpoint "runs/{run_name}/dqn_clean_rl.cleanrl_model"
 ```
 
 DQN Yanick
 ```
-uv run python dqn_example.py --mode eval --run_name {run_name} --eval_checkpoint checkpoint-last.pt
+uv run python dqn_example.py --mode eval --eval_checkpoint "runs/{run_name}/checkpoint-last.pt"
 ```
-`--eval_checkpoint` ist ein Dateiname innerhalb von `runs/{run_name}/` (z.B. `checkpoint-last.pt` oder `checkpoint-<step>.pt`).
 
 ## Projektstruktur
 
 ### pyproject.toml
 
-Diese Datei definiert alle Projektabhängigkeiten und die Python-Version (3.10). Sie enthält auch spezielle Konfigurationen für PyTorch mit CUDA-Unterstützung auf Windows.
+Diese Datei definiert alle Projektabhängigkeiten und die unterstützten Python-Versionen (3.11 bis 3.14). Sie enthält auch spezielle Konfigurationen für PyTorch mit CUDA-Unterstützung auf Windows und Linux.
 
 ### run.py
 
-Template für das Implementieren der Lösung.
+Template für das Implementieren der Lösung. Es läuft unverändert mit einem zufälligen Agenten, die `TODO` Kommentare markieren, wo euer Agent hingehört.
 
-Es steht euch jedoch offen, ob ihr dieses Template verwendet oder einen eigenen Ansatz verfolgt.
+Es steht euch jedoch offen, ob ihr dieses Template verwendet oder einen eigenen Ansatz verfolgt. Evaluiert euren Agenten in jedem Fall mit `utils.env.evaluate`.
 
 ### dqn_example.py
 
-Beispiel-Implementation eines einfachen DQN agent. Kann für die mini-challenge verwendet und erweitert werden.
+Beispiel-Implementation eines einfachen DQN Agenten. Kann für die Mini-Challenge verwendet und erweitert werden.
 
 ### dqn_clean_rl.py
 
-Beispiel-Implementation DQN von [CleanRL](https://docs.cleanrl.dev/). Kann für die mini-challenge verwendet und erweitert werden.
+Beispiel-Implementation DQN von [CleanRL](https://docs.cleanrl.dev/). Kann für die Mini-Challenge verwendet und erweitert werden.
 
 ### ppo_clean_rl.py
 
-Beispiel-Implementation PPO von [CleanRL](https://docs.cleanrl.dev/). Kann für die mini-challenge verwendet und erweitert werden.
+Beispiel-Implementation PPO von [CleanRL](https://docs.cleanrl.dev/). Kann für die Mini-Challenge verwendet und erweitert werden.
 
 
 ### utils/env.py
 
-Beinhaltet die `make_env` Funktion, zum erstellen einer Environment-Instanz.
+Beinhaltet das offizielle Environment (`make_env`) und die Evaluation (`evaluate`).
 
 ### utils/utils.py
 
@@ -243,8 +275,7 @@ Beinhaltet nützliche Funktionen und Klassen.
 Falls Probleme mit der CUDA-Unterstützung auftreten, überprüfen Sie:
 
 1. Ob eine kompatible NVIDIA-Grafikkarte installiert ist
-2. Ob die neuesten NVIDIA-Treiber installiert sind
-3. Ob CUDA Toolkit installiert ist
+2. Ob die neuesten NVIDIA-Treiber installiert sind (PyTorch wird mit CUDA 12.8 installiert und benötigt Treiberversion 570 oder neuer)
 
 Mit dem folgenden Befehl können Sie testen, ob PyTorch CUDA erkennt:
 
@@ -252,6 +283,8 @@ Mit dem folgenden Befehl können Sie testen, ob PyTorch CUDA erkennt:
 uv run python -c "import torch; print(torch.cuda.is_available())"
 ```
 
-### Atari ROM-Probleme
+Auf macOS läuft PyTorch auf der CPU.
 
-Wenn Fehler bezüglich Atari ROMs auftreten, stellen Sie sicher, dass Sie beim ersten Ausführen die Lizenzvereinbarung akzeptiert haben.
+### Atari ROMs
+
+Die Atari ROMs sind im Paket `ale-py` enthalten, ein separater Download oder eine Lizenzbestätigung ist nicht nötig.

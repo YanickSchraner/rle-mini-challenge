@@ -5,7 +5,7 @@ import time
 from collections import defaultdict
 from typing import Callable, Optional
 
-import gym
+import gymnasium as gym
 import numpy as np
 from absl import flags, app
 from tensorboardX import SummaryWriter
@@ -13,40 +13,44 @@ from tensorboardX import SummaryWriter
 import utils.env
 
 # common flags
-flags.DEFINE_enum('mode', 'eval', ['train', 'eval'], 'Run mode.')
+flags.DEFINE_enum('mode', 'train', ['train', 'eval'], 'Run mode.')
 flags.DEFINE_string('logdir', './runs', 'Directory where all outputs are written to.')
 flags.DEFINE_string('run_name', datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S'), 'Run name.')
-flags.DEFINE_bool('cuda', True, 'Whether to run the model on gpu or on cpu.')
+flags.DEFINE_bool('cuda', True, 'Whether to run the model on gpu (if available) or on cpu.')
 flags.DEFINE_integer('seed', 42, 'Random seed.')
 
-# train flags
+# train flags (all step counts are environment steps, summed over all parallel envs)
 # TODO: add your train parameters here
-flags.DEFINE_integer('num_envs', 2, 'Number of parallel env processes.')
-flags.DEFINE_integer('total_steps', 10_000_00, 'Total number of agent steps.')
+flags.DEFINE_integer('num_envs', 2, 'Number of parallel envs.')
+flags.DEFINE_integer('total_steps', 1_000_000, 'Total number of environment steps.')
 flags.DEFINE_integer('checkpoint_freq', 100_000, 'Frequency at which checkpoints are stored.')
 flags.DEFINE_integer('logging_freq', 10_000, 'Frequency at which logs are written.')
 
 # eval flags
 # TODO: add your eval parameters here
-flags.DEFINE_integer('eval_num_episodes', 30, 'Number of eval episodes.')
+flags.DEFINE_string('eval_checkpoint', None, 'Path to the checkpoint to evaluate.')
+flags.DEFINE_integer('eval_num_episodes', utils.env.EVAL_EPISODES, 'Number of eval episodes.')
 flags.DEFINE_bool('eval_render', False, 'Render env during eval.')
-flags.DEFINE_integer('eval_seed', 1234, 'Eval seed.')
+flags.DEFINE_integer('eval_seed', utils.env.EVAL_SEED, 'Eval seed.')
 
 
 FLAGS = flags.FLAGS
 
 
-def make_env_fn(seed: int, render_human: bool = False, video_folder: Optional[str] = None) -> Callable[[], gym.Env]:
+def preprocess(env: gym.Env) -> gym.Env:
+    """ agent specific preprocessing, used for training and evaluation """
+
+    # TODO: maybe add other gym.wrappers, e.g.
+    #  env = gym.wrappers.AtariPreprocessing(env, frame_skip=4)
+    #  env = gym.wrappers.FrameStackObservation(env, 4)
+
+    return env
+
+
+def make_env_fn(video_folder: Optional[str] = None) -> Callable[[], gym.Env]:
     """ returns a pickleable callable to create an env instance """
     def env_fn():
-        env = utils.env.make_env(render_human, video_folder)
-
-        # TODO: maybe add other gym.wrappers
-
-        env.seed(seed)
-        env.action_space.seed(seed)
-        env.observation_space.seed(seed)
-        return env
+        return preprocess(utils.env.make_env(video_folder=video_folder))
     return env_fn
 
 
@@ -63,39 +67,44 @@ def train():
     writer.add_text("config", FLAGS.flags_into_string())
 
     # initialize environments
+    # SAME_STEP: when an episode ends, the env is reset within the same step and the
+    # terminal observation is returned in infos["final_obs"]
     envs = gym.vector.AsyncVectorEnv([
-        make_env_fn(seed=FLAGS.seed, video_folder=os.path.join(logdir, 'videos', 'train') if i == 0 else None)
-        for i in range(FLAGS.num_envs)])
-
-    env_name = envs.unwrapped.spec.id
+        make_env_fn(video_folder=os.path.join(logdir, 'videos', 'train') if i == 0 else None)
+        for i in range(FLAGS.num_envs)], autoreset_mode=gym.vector.AutoresetMode.SAME_STEP)
+    envs.action_space.seed(FLAGS.seed)
 
     # TODO: initialize agent, algorithm, etc...
 
     logs = defaultdict(list)
-    last_log_frame = 0
+    last_log_step = 0
     last_log_time = time.time()
-    total_frames = 0
 
-    obs = envs.reset()
+    def crossed(step: int, freq: int) -> int:
+        """ number of multiples of freq in (step - num_envs, step] """
+        return step // freq - (step - FLAGS.num_envs) // freq
 
-    for global_step in range(FLAGS.total_steps):
+    # every env gets its own seed, otherwise all envs would play the same game
+    obs, _ = envs.reset(seed=[FLAGS.seed + i for i in range(FLAGS.num_envs)])
+
+    for global_step in range(FLAGS.num_envs, FLAGS.total_steps + 1, FLAGS.num_envs):
 
         # TODO: select actions (one for each environment)
+        actions = envs.action_space.sample()
 
         # execute actions in environment
-        new_obs, rewards, dones, infos = envs.step(actions)
-        for done, info in zip(dones, infos):
-            if done and "episode" in info.keys():
-                logs[f"{env_name}/episode_frames"].append(info["episode_frame_number"])
-                logs[f"{env_name}/episode_reward"].append(info["episode"]["r"])
-                logs[f"{env_name}/episode_steps"].append(info["episode"]["l"])
-                total_frames += info["episode_frame_number"]
+        new_obs, rewards, terminations, truncations, infos = envs.step(actions)
+        dones = terminations | truncations
 
         # vector envs reset automatically, so we have to manually get the terminal observations for these steps
         next_obs = new_obs.copy()
-        for i, done in enumerate(dones):
-            if done and infos[i].get("terminal_observation") is not None:
-                next_obs[i] = infos[i]["terminal_observation"]
+        if dones.any():
+            final_info = infos["final_info"]
+            for i in np.flatnonzero(dones):
+                next_obs[i] = infos["final_obs"][i]
+                if final_info.get("_episode", np.zeros(FLAGS.num_envs, bool))[i]:
+                    logs["episode_reward"].append(final_info["episode"]["r"][i])
+                    logs["episode_frames"].append(final_info["episode"]["l"][i])
 
         # TODO: update agent
 
@@ -103,66 +112,47 @@ def train():
         obs = new_obs
 
         # store checkpoint
-        if global_step % FLAGS.checkpoint_freq == 0:
+        if crossed(global_step, FLAGS.checkpoint_freq):
 
             # TODO: save agent checkpoint
 
             pass
 
         # logging
-        if global_step % FLAGS.logging_freq == 0:
+        if crossed(global_step, FLAGS.logging_freq):
             current_log_time = time.time()
-            fps = (total_frames - last_log_frame) / (current_log_time - last_log_time)
-            writer.add_scalar("fps", fps, total_frames)
-            writer.add_scalar('steps', global_step, total_frames)
+            logs['steps_per_second'].append((global_step - last_log_step) / (current_log_time - last_log_time))
             for k, v in logs.items():
-                writer.add_scalar(f'{k}/mean', np.mean(v), total_frames)
-                writer.add_scalar(f'{k}/std', np.std(v), total_frames)
-                writer.add_scalar(f'{k}/min', np.min(v), total_frames)
-                writer.add_scalar(f'{k}/max', np.max(v), total_frames)
-            logs['fps'].append(fps)
+                writer.add_scalar(f'{k}/mean', np.mean(v), global_step)
+                writer.add_scalar(f'{k}/std', np.std(v), global_step)
+                writer.add_scalar(f'{k}/min', np.min(v), global_step)
+                writer.add_scalar(f'{k}/max', np.max(v), global_step)
             print(" | ".join([f"step={global_step}"] + [f"{k}={np.mean(v):.2f}" for k, v in sorted(logs.items())]))
             logs = defaultdict(list)
-            last_log_frame = total_frames
+            last_log_step = global_step
             last_log_time = current_log_time
 
     envs.close()
+    writer.close()
 
     # TODO: save agent checkpoint
 
 
 def eval():
-    env_fn = make_env_fn(FLAGS.eval_seed, FLAGS.eval_render)
-    env = env_fn()
-
-    # TODO: initialize agent and load checkpoint
-
-    episode_rewards = []
-
-    for episode_idx in range(FLAGS.eval_num_episodes):
-        obs = env.reset()
-        done = False
-        step = 0
-        while not done:
-
-            # TODO: select action
-
-            obs, reward, done, info = env.step(action)
-            step += 1
-
-            if done:
-                print(f"Episode {episode_idx}: "
-                      f"reward={info['episode']['r']}, "
-                      f"steps={step}, "
-                      f"frames={info['episode_frame_number']}")
-                episode_rewards.append(info['episode']['r'])
-
-    print(f"Evaluation completed: "
-          f"mean_episode_reward={np.mean(episode_rewards):.2f}, "
-          f"std_episode_reward={np.std(episode_rewards):.2f}, "
-          f"min_episode_reward={np.min(episode_rewards):.2f}, "
-          f"max_episode_reward={np.max(episode_rewards):.2f}")
+    env = utils.env.make_env()
+    action_space = env.action_space
     env.close()
+
+    # TODO: initialize agent and load checkpoint from FLAGS.eval_checkpoint
+
+    def policy(obs):
+
+        # TODO: select action
+
+        return action_space.sample()
+
+    utils.env.evaluate(policy, preprocess, num_episodes=FLAGS.eval_num_episodes, seed=FLAGS.eval_seed,
+                       render_mode='human' if FLAGS.eval_render else None)
 
 
 def main(_):
