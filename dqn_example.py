@@ -5,7 +5,7 @@ import time
 from collections import defaultdict
 from typing import Callable, Optional
 
-import gym
+import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -14,57 +14,58 @@ from tensorboardX import SummaryWriter
 from torch import nn, optim
 
 import utils.env
-from utils.utils import LinearSchedule, RingBuffer
+from utils.utils import FrameStackReplayBuffer, LinearSchedule
 
 # common flags
 flags.DEFINE_enum('mode', 'train', ['train', 'eval'], 'Run mode.')
 flags.DEFINE_string('logdir', './runs', 'Directory where all outputs are written to.')
 flags.DEFINE_string('run_name', datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S'), 'Run name.')
-flags.DEFINE_bool('cuda', True, 'Whether to run the model on gpu or on cpu.')
+flags.DEFINE_bool('cuda', True, 'Whether to run the model on gpu (if available) or on cpu.')
 flags.DEFINE_integer('seed', 42, 'Random seed.')
 
-# train flags
+# train flags (all step counts are environment steps, summed over all parallel envs)
 flags.DEFINE_float('gamma', .99, 'Discount factor.')
 flags.DEFINE_integer('batch_size', 32, 'Train batch size.')
 flags.DEFINE_float('learning_rate', 2.5e-4, 'Learning rate.')
 flags.DEFINE_float('max_grad_norm', 10, 'Maximum gradient norm. Gradients with larger norms will be clipped.')
-flags.DEFINE_integer('num_envs', 16, 'Number of parallel env processes.')
-flags.DEFINE_integer('total_steps', 10_000_000, 'Total number of agent steps.')
+flags.DEFINE_integer('num_envs', 16, 'Number of parallel envs.')
+flags.DEFINE_integer('total_steps', 10_000_000, 'Total number of environment steps.')
 flags.DEFINE_integer('warmup_steps', 80_000, 'Number of warmup steps to fill the replay buffer.')
-flags.DEFINE_integer('buffer_size', 100_000, 'Replay buffer size.')
+flags.DEFINE_integer('buffer_size', 100_000, 'Replay buffer size (needs ~1.4 GB of RAM for 100k transitions).')
 flags.DEFINE_float('exploration_epsilon_initial', 1.0, 'Initial exploration rate.')
 flags.DEFINE_float('exploration_epsilon_final', 0.1, 'Final exploration rate.')
-flags.DEFINE_float('exploration_fraction', 0.1, 'Fraction of total_frames it takes to decay initial to final epsilon.')
-flags.DEFINE_integer('train_freq', 4, 'Frequency at which train steps are executed.')
-flags.DEFINE_integer('checkpoint_freq', 100_000, 'Frequency at which checkpoints are stored.')
+flags.DEFINE_float('exploration_fraction', 0.1, 'Fraction of total_steps it takes to decay initial to final epsilon.')
+flags.DEFINE_integer('train_freq', 4, 'One gradient step every train_freq environment steps.')
+flags.DEFINE_integer('checkpoint_freq', 1_000_000, 'Frequency at which checkpoints are stored.')
 flags.DEFINE_integer('logging_freq', 10_000, 'Frequency at which logs are written.')
 flags.DEFINE_integer('target_network_update_freq', 1000, 'Frequency at which the target network is updated.')
 
 # eval flags
-flags.DEFINE_string('eval_checkpoint', None, 'Eval checkpoint filename.')
-flags.DEFINE_integer('eval_num_episodes', 100, 'Number of eval episodes.')
+flags.DEFINE_string('eval_checkpoint', None, 'Path to the checkpoint to evaluate, e.g. runs/<run_name>/checkpoint-last.pt')
+flags.DEFINE_integer('eval_num_episodes', utils.env.EVAL_EPISODES, 'Number of eval episodes.')
 flags.DEFINE_float('eval_epsilon', 0.05, 'Epsilon-greedy during eval.')
 flags.DEFINE_bool('eval_render', False, 'Render env during eval.')
-flags.DEFINE_integer('eval_seed', 1234, 'Eval seed.')
+flags.DEFINE_integer('eval_seed', utils.env.EVAL_SEED, 'Eval seed.')
 
 FLAGS = flags.FLAGS
 
 
-def make_env_fn(seed: int, render_human: bool = False, video_folder: Optional[str] = None) -> Callable[[], gym.Env]:
+def preprocess(env: gym.Env) -> gym.Env:
+    """ agent specific preprocessing: frame skipping with max-pooling, grayscale 84x84 frames, stack of 4 frames """
+    env = gym.wrappers.AtariPreprocessing(env, noop_max=30, frame_skip=4, screen_size=84, grayscale_obs=True)
+    env = gym.wrappers.FrameStackObservation(env, 4)
+    return env
+
+
+def make_env_fn(video_folder: Optional[str] = None) -> Callable[[], gym.Env]:
     """ returns a pickleable callable to create an env instance """
     def env_fn():
-        env = utils.env.make_env(render_human, video_folder)
-        env = gym.wrappers.ResizeObservation(env, (84, 84))
-        env = gym.wrappers.TransformObservation(env, np.squeeze)  # get rid of 3rd dimension added by ResizeObservation
-        env.seed(seed)
-        env.action_space.seed(seed)
-        env.observation_space.seed(seed)
-        return env
+        return preprocess(utils.env.make_env(video_folder=video_folder))
     return env_fn
 
 
 class DQN(nn.Module):
-    def __init__(self, num_actions: int, in_channels: int = 1):
+    def __init__(self, num_actions: int, in_channels: int = 4):
         super().__init__()
         self.qnet = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=8, stride=4),
@@ -80,8 +81,6 @@ class DQN(nn.Module):
         )
 
     def forward(self, obs):
-        if len(obs.shape) == 3:
-            obs = torch.unsqueeze(obs, dim=1)  # add channel dim
         obs = obs * (1. / 255.)
         return self.qnet(obs)
 
@@ -99,14 +98,15 @@ def train(device):
     writer = SummaryWriter(os.path.join(logdir, 'logs'))
     writer.add_text("config", FLAGS.flags_into_string())
 
+    # SAME_STEP: when an episode ends, the env is reset within the same step and the
+    # terminal observation is returned in infos["final_obs"]
     envs = gym.vector.SyncVectorEnv([
-        make_env_fn(seed=FLAGS.seed, video_folder=os.path.join(logdir, 'videos', 'train') if i == 0 else None)
-        for i in range(FLAGS.num_envs)])
-
-    env_name = envs.envs[0].spec.id
+        make_env_fn(video_folder=os.path.join(logdir, 'videos', 'train') if i == 0 else None)
+        for i in range(FLAGS.num_envs)], autoreset_mode=gym.vector.AutoresetMode.SAME_STEP)
+    envs.action_space.seed(FLAGS.seed)
 
     exploration_epsilon_schedule = LinearSchedule(
-        initial_value=1.,
+        initial_value=FLAGS.exploration_epsilon_initial,
         final_value=FLAGS.exploration_epsilon_final,
         schedule_steps=int(FLAGS.exploration_fraction * FLAGS.total_steps)
     )
@@ -118,164 +118,133 @@ def train(device):
 
     optimizer = optim.Adam(q_network.parameters(), lr=FLAGS.learning_rate)
 
-    replay_buffer = RingBuffer(size=FLAGS.buffer_size, specs={
-        'obs': (envs.single_observation_space.shape, envs.single_observation_space.dtype),
-        'next_obs': (envs.single_observation_space.shape, envs.single_observation_space.dtype),
-        'actions': (envs.single_action_space.shape, envs.single_action_space.dtype),
-        'rewards': ((), np.float32),
-        'dones': ((), np.float32),
-    })
+    # stores single frames instead of full frame stacks for obs and next_obs (4x less memory)
+    stack_size, *frame_shape = envs.single_observation_space.shape
+    replay_buffer = FrameStackReplayBuffer(size=FLAGS.buffer_size, num_envs=FLAGS.num_envs,
+                                           stack_size=stack_size, frame_shape=frame_shape)
 
     logs = defaultdict(list)
-    last_log_frame = 0
+    last_log_step = 0
     last_log_time = time.time()
-    total_frames = 0
 
-    obs = envs.reset()
+    def crossed(step: int, freq: int) -> int:
+        """ number of multiples of freq in (step - num_envs, step] """
+        return step // freq - (step - FLAGS.num_envs) // freq
 
-    for global_step in range(FLAGS.total_steps):
-        # epsilon greedy action selection
+    # every env gets its own seed, otherwise all envs would play the same game
+    obs, _ = envs.reset(seed=[FLAGS.seed + i for i in range(FLAGS.num_envs)])
+
+    for global_step in range(FLAGS.num_envs, FLAGS.total_steps + 1, FLAGS.num_envs):
+        # epsilon greedy action selection (independently for each env)
         epsilon = exploration_epsilon_schedule.value(global_step)
-        if random.random() < epsilon:
-            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-        else:
-            q_values = q_network(torch.tensor(obs).to(device))
-            actions = torch.argmax(q_values, dim=1).cpu().numpy()
+        with torch.no_grad():
+            q_values = q_network(torch.tensor(obs, device=device))
+        actions = torch.argmax(q_values, dim=1).cpu().numpy()
+        explore = np.random.random(FLAGS.num_envs) < epsilon
+        actions[explore] = np.random.randint(envs.single_action_space.n, size=explore.sum())
         logs["epsilon"].append(epsilon)
 
         # execute actions in environment
-        new_obs, rewards, dones, infos = envs.step(actions)
-        for done, info in zip(dones, infos):
-            if done and "episode" in info.keys():
-                logs[f"{env_name}/episode_frames"].append(info["episode_frame_number"])
-                logs[f"{env_name}/episode_reward"].append(info["episode"]["r"])
-                logs[f"{env_name}/episode_steps"].append(info["episode"]["l"])
-                total_frames += info["episode_frame_number"]
+        new_obs, rewards, terminations, truncations, infos = envs.step(actions)
+        dones = terminations | truncations
 
         # vector envs reset automatically, so we have to manually get the terminal observations for these steps
         next_obs = new_obs.copy()
-        for i, done in enumerate(dones):
-            if done and infos[i].get("terminal_observation") is not None:
-                next_obs[i] = infos[i]["terminal_observation"]
+        if dones.any():
+            final_info = infos["final_info"]
+            for i in np.flatnonzero(dones):
+                next_obs[i] = infos["final_obs"][i]
+                if final_info.get("_episode", np.zeros(FLAGS.num_envs, bool))[i]:
+                    logs["episode_reward"].append(final_info["episode"]["r"][i])
+                    logs["episode_frames"].append(final_info["episode"]["l"][i])
 
-        # save data to reply buffer
-        replay_buffer.put({
-            'obs': obs,
-            'next_obs': next_obs,
-            'actions': actions,
-            'rewards': rewards,
-            'dones': dones,
-        })
-
-        # optimize model (after initial warmup phase to fill the replay buffer)
-        if global_step > FLAGS.warmup_steps and global_step % FLAGS.train_freq == 0:
-            # sample a batch from the replay buffer
-            batch = {
-                k: torch.tensor(v).to(device)
-                for k, v in replay_buffer.sample(FLAGS.batch_size).items()
-            }
-
-            # compute estimate of best q values starting from next states
-            next_q_value, _ = target_network(batch['next_obs']).max(dim=1)
-
-            # mask q values where the episode has ended at the current step
-            next_q_value_masked = next_q_value * (1 - batch['dones'])
-
-            # compute td target
-            td_target = batch['rewards'] + FLAGS.gamma * next_q_value_masked
-
-            # compute estimated q values of actions taken in current step
-            selected_q_values = q_network(batch['obs']).gather(1, torch.unsqueeze(batch['actions'], dim=1))
-
-            # compute loss (huber loss)
-            loss = F.smooth_l1_loss(selected_q_values.squeeze(), td_target.detach())
-
-            # optimize the model
-            optimizer.zero_grad()
-            loss.backward()
-            grad_norm = nn.utils.clip_grad_norm_(list(q_network.parameters()), FLAGS.max_grad_norm)
-            optimizer.step()
-
-            logs['loss'].append(loss.cpu().detach().numpy())
-            logs['q_values'].append(selected_q_values.mean().item())
-            logs['grad_norm'].append(grad_norm.cpu().detach().numpy())
+        # save data to replay buffer. Only terminations mask the next q values, truncated
+        # episodes (time limit reached) would have continued.
+        replay_buffer.put(obs, actions, rewards, next_obs, dones=terminations, episode_ends=dones)
 
         # set obs to new obs for next step
         obs = new_obs
 
-        # update the target network
-        if global_step > FLAGS.warmup_steps and global_step % FLAGS.target_network_update_freq == 0:
-            target_network.load_state_dict(q_network.state_dict())
+        # optimize model (after initial warmup phase to fill the replay buffer)
+        if global_step > FLAGS.warmup_steps:
+            for _ in range(crossed(global_step, FLAGS.train_freq)):
+                # sample a batch from the replay buffer
+                batch = {
+                    k: torch.tensor(v, device=device)
+                    for k, v in replay_buffer.sample(FLAGS.batch_size).items()
+                }
+
+                # compute td target from the best q values of the next states (estimated by the target network);
+                # mask q values where the episode has ended at the current step
+                with torch.no_grad():
+                    next_q_value, _ = target_network(batch['next_obs']).max(dim=1)
+                    td_target = batch['rewards'] + FLAGS.gamma * next_q_value * (1 - batch['dones'])
+
+                # compute estimated q values of actions taken in current step
+                selected_q_values = q_network(batch['obs']).gather(1, batch['actions'].unsqueeze(1)).squeeze(1)
+
+                # compute loss (huber loss)
+                loss = F.smooth_l1_loss(selected_q_values, td_target)
+
+                # optimize the model
+                optimizer.zero_grad()
+                loss.backward()
+                grad_norm = nn.utils.clip_grad_norm_(q_network.parameters(), FLAGS.max_grad_norm)
+                optimizer.step()
+
+                logs['loss'].append(loss.item())
+                logs['q_values'].append(selected_q_values.mean().item())
+                logs['grad_norm'].append(grad_norm.item())
+
+            # update the target network
+            if crossed(global_step, FLAGS.target_network_update_freq):
+                target_network.load_state_dict(q_network.state_dict())
 
         # store checkpoint
-        if global_step > FLAGS.warmup_steps and global_step % FLAGS.checkpoint_freq == 0:
+        if crossed(global_step, FLAGS.checkpoint_freq):
             torch.save(q_network.state_dict(), os.path.join(logdir, f'checkpoint-{global_step}.pt'))
 
         # logging
-        if global_step % FLAGS.logging_freq == 0:
+        if crossed(global_step, FLAGS.logging_freq):
             current_log_time = time.time()
-            fps = (total_frames - last_log_frame) / (current_log_time - last_log_time)
-            writer.add_scalar("fps", fps, total_frames)
-            writer.add_scalar('steps', global_step, total_frames)
+            logs['steps_per_second'].append((global_step - last_log_step) / (current_log_time - last_log_time))
             for k, v in logs.items():
-                writer.add_scalar(f'{k}/mean', np.mean(v), total_frames)
-                writer.add_scalar(f'{k}/std', np.std(v), total_frames)
-                writer.add_scalar(f'{k}/min', np.min(v), total_frames)
-                writer.add_scalar(f'{k}/max', np.max(v), total_frames)
-            logs['fps'].append(fps)
+                writer.add_scalar(f'{k}/mean', np.mean(v), global_step)
+                writer.add_scalar(f'{k}/std', np.std(v), global_step)
+                writer.add_scalar(f'{k}/min', np.min(v), global_step)
+                writer.add_scalar(f'{k}/max', np.max(v), global_step)
             print(" | ".join([f"step={global_step}"] + [f"{k}={np.mean(v):.2f}" for k, v in sorted(logs.items())]))
             logs = defaultdict(list)
-            last_log_frame = total_frames
+            last_log_step = global_step
             last_log_time = current_log_time
 
     envs.close()
-    torch.save(q_network.state_dict(), os.path.join(logdir, f'checkpoint-last.pt'))
+    writer.close()
+    torch.save(q_network.state_dict(), os.path.join(logdir, 'checkpoint-last.pt'))
 
 
 def eval(device):
-    env_fn = make_env_fn(FLAGS.eval_seed, FLAGS.eval_render)
-    env = env_fn()
+    if FLAGS.eval_checkpoint is None:
+        raise app.UsageError("--eval_checkpoint is required in eval mode")
 
-    q_network = DQN(env.action_space.n).to(device)
-    q_network.load_state_dict(torch.load(os.path.join(FLAGS.logdir, FLAGS.run_name, FLAGS.eval_checkpoint)))
+    num_actions = utils.env.make_env().action_space.n
+    q_network = DQN(num_actions).to(device)
+    q_network.load_state_dict(torch.load(FLAGS.eval_checkpoint, map_location=device))
     q_network.eval()
 
-    episode_rewards = []
+    def policy(obs):
+        if random.random() < FLAGS.eval_epsilon:
+            return random.randrange(num_actions)
+        with torch.no_grad():
+            q_values = q_network(torch.tensor(obs, device=device).unsqueeze(0))
+        return int(torch.argmax(q_values, dim=1).item())
 
-    for episode_idx in range(FLAGS.eval_num_episodes):
-        obs = env.reset()
-        done = False
-        step = 0
-        while not done:
-            q_values = q_network(torch.tensor([obs]).to(device))
-
-            if random.random() < FLAGS.eval_epsilon:
-                action = env.action_space.sample()
-            else:
-                action = int(torch.argmax(q_values, dim=1).cpu().numpy())
-
-            obs, reward, done, info = env.step(action)
-            step += 1
-
-            if done:
-                print(f"Episode {episode_idx}: "
-                      f"reward={info['episode']['r']}, "
-                      f"steps={step}, "
-                      f"frames={info['episode_frame_number']}")
-                episode_rewards.append(info['episode']['r'])
-
-    print(f"Evaluation completed: "
-          f"mean_episode_reward={np.mean(episode_rewards):.2f}, "
-          f"std_episode_reward={np.std(episode_rewards):.2f}, "
-          f"min_episode_reward={np.min(episode_rewards):.2f}, "
-          f"max_episode_reward={np.max(episode_rewards):.2f}")
-    env.close()
+    utils.env.evaluate(policy, preprocess, num_episodes=FLAGS.eval_num_episodes, seed=FLAGS.eval_seed,
+                       render_mode='human' if FLAGS.eval_render else None)
 
 
 def main(_):
-    device_name = "cuda" if FLAGS.cuda else "cpu"
-    if device_name == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("cuda=true, but cuda is not available")
+    device_name = "cuda" if FLAGS.cuda and torch.cuda.is_available() else "cpu"
     device = torch.device(device_name)
     print(f"Using device: {device_name}")
 

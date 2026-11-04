@@ -3,6 +3,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
@@ -12,7 +13,8 @@ import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
-from utils.ppo_eval import evaluate
+
+import utils.env
 
 from stable_baselines3.common.atari_wrappers import (  # isort:skip
     ClipRewardEnv,
@@ -37,18 +39,18 @@ class Args:
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "cleanRL"
     """the wandb's project name"""
-    wandb_entity: str = None
+    wandb_entity: Optional[str] = None
     """the entity (team) of wandb's project"""
     capture_video: bool = True
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     save_model: bool = True
     """whether to save model into the `runs/{run_name}` folder"""
-    eval_checkpoint: str = None
-    """"if set, no training, only evaluation of the checkpoint is done"""
+    eval_checkpoint: Optional[str] = None
+    """if set, no training, only evaluation of the checkpoint is done"""
+    eval_episodes: int = utils.env.EVAL_EPISODES
+    """the number of evaluation episodes"""
 
     # Algorithm specific arguments
-    env_id: str = "ALE/SpaceInvaders-v5"
-    """the id of the environment"""
     total_timesteps: int = 10_000_000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
@@ -79,7 +81,7 @@ class Args:
     """coefficient of the value function"""
     max_grad_norm: float = 0.5
     """the maximum norm for the gradient clipping"""
-    target_kl: float = None
+    target_kl: Optional[float] = None
     """the target KL divergence threshold"""
 
     # to be filled in runtime
@@ -91,24 +93,25 @@ class Args:
     """the number of iterations (computed in runtime)"""
 
 
-def make_env(env_id, idx, capture_video, run_name):
-    def thunk():
-        if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        else:
-            env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env = NoopResetEnv(env, noop_max=30)
-        env = MaxAndSkipEnv(env, skip=4)
+def preprocess(env, training=True):
+    env = NoopResetEnv(env, noop_max=30)
+    env = MaxAndSkipEnv(env, skip=4)
+    if training:
+        # ending episodes on life loss helps training, but evaluation always plays full games
         env = EpisodicLifeEnv(env)
-        if "FIRE" in env.unwrapped.get_action_meanings():
-            env = FireResetEnv(env)
-        env = ClipRewardEnv(env)
-        env = gym.wrappers.ResizeObservation(env, (84, 84))
-        env = gym.wrappers.GrayScaleObservation(env)
-        env = gym.wrappers.FrameStack(env, 4)
-        return env
+    if "FIRE" in env.unwrapped.get_action_meanings():
+        env = FireResetEnv(env)
+    env = ClipRewardEnv(env)
+    env = gym.wrappers.ResizeObservation(env, (84, 84))
+    env = gym.wrappers.GrayscaleObservation(env)
+    env = gym.wrappers.FrameStackObservation(env, 4)
+    return env
+
+
+def make_env(idx, capture_video, run_name):
+    def thunk():
+        video_folder = f"videos/{run_name}" if capture_video and idx == 0 else None
+        return preprocess(utils.env.make_env(video_folder=video_folder))
 
     return thunk
 
@@ -153,7 +156,7 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{time.strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"SpaceInvaders__{args.exp_name}__{args.seed}__{time.strftime('%Y%m%d_%H%M%S')}"
     if args.track:
         import wandb
 
@@ -181,8 +184,10 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
+    # SAME_STEP: when an episode ends, the env is reset within the same step
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
+        [make_env(i, args.capture_video and not args.eval_checkpoint, run_name) for i in range(args.num_envs)],
+        autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
@@ -231,12 +236,12 @@ if __name__ == "__main__":
                 rewards[step] = torch.tensor(reward).to(device).view(-1)
                 next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
 
-                if "final_info" in infos:
-                    for info in infos["final_info"]:
-                        if info and "episode" in info:
-                            print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                            writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                            writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                if "final_info" in infos and "_episode" in infos["final_info"]:
+                    episode = infos["final_info"]["episode"]
+                    for i in np.flatnonzero(infos["final_info"]["_episode"]):
+                        print(f"global_step={global_step}, episodic_return={episode['r'][i]}")
+                        writer.add_scalar("charts/episodic_return", episode["r"][i], global_step)
+                        writer.add_scalar("charts/episodic_length", episode["l"][i], global_step)
 
             # bootstrap value if not done
             with torch.no_grad():
@@ -337,16 +342,23 @@ if __name__ == "__main__":
             torch.save(agent.state_dict(), model_path)
 
             print(f"model saved to {model_path}")
-        
-    model_path = args.eval_checkpoint if args.eval_checkpoint else model_path
-    episodic_returns = evaluate(
-        model_path,
-        make_env,
-        args.env_id,
-        eval_episodes=100,
-        run_name=f"{run_name}-eval",
-        Model=Agent,
-        device=device,
+    else:
+        agent.load_state_dict(torch.load(args.eval_checkpoint, map_location=device))
+    envs.close()
+
+    # evaluation with the official protocol
+    agent.eval()
+
+    def policy(obs):
+        with torch.no_grad():
+            action, _, _, _ = agent.get_action_and_value(torch.Tensor(obs).unsqueeze(0).to(device))
+        return int(action.item())
+
+    episodic_returns = utils.env.evaluate(
+        policy,
+        lambda env: preprocess(env, training=False),
+        num_episodes=args.eval_episodes,
+        video_folder=f"videos/{run_name}-eval" if args.capture_video else None,
     )
     writer.add_scalar("eval/episodic_return_mean", np.average(episodic_returns),0)
     writer.add_scalar("eval/episodic_return_min", np.min(episodic_returns),0)
@@ -355,5 +367,4 @@ if __name__ == "__main__":
     for idx, episodic_return in enumerate(episodic_returns):
         writer.add_scalar("eval/episodic_return", episodic_return, idx)
 
-    envs.close()
     writer.close()
